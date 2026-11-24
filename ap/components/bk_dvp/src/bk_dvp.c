@@ -257,6 +257,10 @@ static bk_err_t dvp_camera_dma_config(dvp_driver_handle_t *handle)
         return ret;
 #endif
     }
+    else
+    {
+        return BK_ERR_PARAM;
+    }
 
     LOGV("dvp_dma id:%d \r\n", handle->dma_channel);
 
@@ -539,7 +543,9 @@ static bk_err_t dvp_camera_deinit(dvp_driver_handle_t *handle)
 
 static void dvp_camera_reset_hardware_modules_handler(dvp_driver_handle_t *handle)
 {
+#if defined(CONFIG_JPEGENC_HW) || defined(CONFIG_H264)
     bk_dvp_config_t *config = handle->config;
+#endif
 
     bk_yuv_buf_stop(YUV_MODE);
 
@@ -578,7 +584,9 @@ static void dvp_camera_reset_hardware_modules_handler(dvp_driver_handle_t *handl
     if (handle->config->img_format & IMAGE_H264)
     {
         bk_yuv_buf_start(H264_MODE);
+#ifdef CONFIG_H264
         bk_h264_encode_enable();
+#endif
     }
     else if (handle->config->img_format & IMAGE_MJPEG)
     {

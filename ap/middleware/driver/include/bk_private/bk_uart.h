@@ -15,7 +15,7 @@
 #pragma once
 
 #include <stdio.h>
-#include <driver/hal/hal_uart_types.h>
+#include <driver/uart_types.h>
 #include <components/system.h>
 
 #ifdef __cplusplus
@@ -29,6 +29,17 @@ extern "C" {
 void uart0_isr(void);
 void uart1_isr(void);
 void uart2_isr(void);
+/* Initialize the UART peripheral, leaving pin configuration to the caller. */
+bk_err_t bk_uart_init_no_pins(uart_id_t id, const uart_config_t *config);
+typedef struct {
+    uint32_t overrun;
+    uint32_t framing;
+    uint32_t buffer_full;
+} bk_uart_rx_errors_t;
+/* Notify after an RX idle interrupt or when the software FIFO reaches min_bytes. */
+bk_err_t bk_uart_register_rx_ready_isr(uart_id_t id, uint32_t min_bytes,
+				      uart_isr_t isr, void *param);
+bk_err_t bk_uart_get_rx_errors(uart_id_t id, bk_uart_rx_errors_t *errors);
 void print_hex_dump(const char *prefix, const void *b, int len);
 uint32_t uart_get_length_in_buffer(uart_id_t id);
 uint32_t uart_id_to_pm_uart_id(uint32_t id);

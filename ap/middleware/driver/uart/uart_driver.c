@@ -77,6 +77,7 @@ typedef struct {
 #if 1
 	bool sw_flow_ctrl_en;
 	bool rx_int_enable;
+	bool batch_rx;
 	uint8_t rts_gpio;
 	uint8_t cts_gpio;
 	uint32_t sw_fifo_size;
@@ -97,6 +98,12 @@ typedef struct
 	uart_isr_t callback;
 	void *param;
 } uart_callback_t;
+
+typedef struct {
+	uart_callback_t handler;
+	uint32_t min_bytes;
+	bk_uart_rx_errors_t errors;
+} uart_rx_ready_t;
 
 #define CONFIG_UART_MIN_BAUD_RATE (UART_CLOCK / (0xffff + 1))
 #define CONFIG_UART_MAX_BAUD_RATE (UART_CLOCK / (4 + 1))
@@ -119,6 +126,7 @@ static uart_driver_t s_uart[SOC_UART_ID_NUM_PER_UNIT] = {
 };
 static bool s_uart_driver_is_init = false;
 static uart_callback_t s_uart_rx_isr[SOC_UART_ID_NUM_PER_UNIT] = {NULL};
+static uart_rx_ready_t s_uart_rx_ready[SOC_UART_ID_NUM_PER_UNIT];
 static uart_callback_t s_uart_tx_isr[SOC_UART_ID_NUM_PER_UNIT] = {NULL};
 static kfifo_ptr_t s_uart_rx_kfifo[SOC_UART_ID_NUM_PER_UNIT] = {NULL};
 static uart_sema_t s_uart_sema[SOC_UART_ID_NUM_PER_UNIT] = {0};
@@ -440,7 +448,7 @@ static void uart_id_deinit_kfifo(uart_id_t id)
  * 2. set clock
  * 3. set gpio as uart
  */
-static bk_err_t uart_id_init_common(uart_id_t id)
+static bk_err_t uart_id_init_common(uart_id_t id, bool init_pins)
 {
 	bk_err_t ret = 0;
 
@@ -452,7 +460,8 @@ static bk_err_t uart_id_init_common(uart_id_t id)
 	clk_set_uart_clk_26m(id);
 #endif
 
-	uart_init_gpio(id);
+	if (init_pins)
+		uart_init_gpio(id);
 	ret = uart_id_init_kfifo(id);
 	uart_statis_id_init(id);
 
@@ -704,6 +713,24 @@ static uint32_t uart_id_dma_read_fifo_frame(uart_id_t id, const kfifo_ptr_t rx_p
 
 static uint32_t uart_id_read_fifo_frame(uart_id_t id, const kfifo_ptr_t rx_ptr)
 {
+#if !CONFIG_UART_SW_FLOW_CTRL
+	if (s_uart[id].batch_rx && !uart_hal_is_flow_control_enabled(&s_uart[id].hal, id)) {
+		uint8_t chunk[UART_HW_FIFO_SIZE];
+		uint32_t room = kfifo_unused(rx_ptr);
+		uint32_t used = 0;
+		while (used < sizeof(chunk) && used < room &&
+		       uart_hal_is_fifo_read_ready(&s_uart[id].hal, id)) {
+			chunk[used++] = uart_hal_read_byte(&s_uart[id].hal, id);
+		}
+		if (used != 0)
+			kfifo_put(rx_ptr, chunk, used);
+		if (used == room && uart_hal_is_fifo_read_ready(&s_uart[id].hal, id)) {
+			++s_uart_rx_ready[id].errors.buffer_full;
+			uart_hal_read_byte(&s_uart[id].hal, id);
+		}
+		return used;
+	}
+#endif
 	uint8_t read_val = 0;
 	uint32_t rx_count = sizeof(read_val);
 	uint32_t unused = kfifo_unused(rx_ptr);
@@ -993,6 +1020,7 @@ bk_err_t bk_uart_driver_init(void)
 	}
 
 	os_memset(&s_uart_rx_isr, 0, sizeof(s_uart_rx_isr));
+	os_memset(&s_uart_rx_ready, 0, sizeof(s_uart_rx_ready));
 	os_memset(&s_uart_tx_isr, 0, sizeof(s_uart_tx_isr));
 	uart_statis_init();
 	s_uart_driver_is_init = true;
@@ -1246,7 +1274,7 @@ static bk_err_t uart_tx_dma_deinit(uart_id_t id)
 }
 #endif
 
-bk_err_t bk_uart_init(uart_id_t id, const uart_config_t *config)
+static bk_err_t uart_init(uart_id_t id, const uart_config_t *config, bool init_pins)
 {
 	UART_RETURN_ON_NOT_INIT();
 	BK_RETURN_ON_NULL(config);
@@ -1304,7 +1332,8 @@ bk_err_t bk_uart_init(uart_id_t id, const uart_config_t *config)
 	icu_enable_uart_interrupt(id);
 #endif
 
-	uart_id_init_common(id);
+	uart_id_init_common(id, init_pins);
+	s_uart[id].batch_rx = !init_pins && id == UART_ID_2;
 #if (CONFIG_SYSTEM_CTRL)
 	if (config->src_clk == UART_SCLK_APLL)
 		sys_drv_uart_select_clock(id, UART_SCLK_APLL);
@@ -1366,6 +1395,16 @@ bk_err_t bk_uart_init(uart_id_t id, const uart_config_t *config)
 	uart_hal_start_common(&s_uart[id].hal, id);
 
 	return BK_OK;
+}
+
+bk_err_t bk_uart_init(uart_id_t id, const uart_config_t *config)
+{
+	return uart_init(id, config, true);
+}
+
+bk_err_t bk_uart_init_no_pins(uart_id_t id, const uart_config_t *config)
+{
+	return uart_init(id, config, false);
 }
 
 bk_err_t bk_uart_deinit(uart_id_t id)
@@ -1547,6 +1586,35 @@ bk_err_t bk_uart_register_tx_isr(uart_id_t id, uart_isr_t isr, void *param)
 	s_uart_tx_isr[id].param = param;
 	GLOBAL_INT_RESTORE();
 
+	return BK_OK;
+}
+
+bk_err_t bk_uart_register_rx_ready_isr(uart_id_t id, uint32_t min_bytes,
+				      uart_isr_t isr, void *param)
+{
+	UART_RETURN_ON_NOT_INIT();
+	UART_RETURN_ON_INVALID_ID(id);
+	UART_PM_CHECK_RESTORE(id);
+
+	GLOBAL_INT_DECLARATION();
+	GLOBAL_INT_DISABLE();
+	s_uart_rx_ready[id].handler = (uart_callback_t){.callback = isr, .param = param};
+	s_uart_rx_ready[id].min_bytes = min_bytes;
+	s_uart_rx_ready[id].errors = (bk_uart_rx_errors_t){0};
+	GLOBAL_INT_RESTORE();
+	return BK_OK;
+}
+
+bk_err_t bk_uart_get_rx_errors(uart_id_t id, bk_uart_rx_errors_t *errors)
+{
+	UART_RETURN_ON_INVALID_ID(id);
+	if (!errors)
+		return BK_ERR_PARAM;
+
+	GLOBAL_INT_DECLARATION();
+	GLOBAL_INT_DISABLE();
+	*errors = s_uart_rx_ready[id].errors;
+	GLOBAL_INT_RESTORE();
 	return BK_OK;
 }
 
@@ -1917,6 +1985,11 @@ static void uart_isr_common(uart_id_t id)
 	int_enable_status = uart_hal_get_int_enable_status(&s_uart[id].hal, id);
 	status = int_status & int_enable_status;
 	uart_hal_clear_interrupt_status(&s_uart[id].hal, id, int_status);
+	uart_rx_ready_t *ready = &s_uart_rx_ready[id];
+	if (ready->handler.callback) {
+		ready->errors.overrun += uart_hal_is_rx_over_flow_int_triggered(&s_uart[id].hal, id, int_status);
+		ready->errors.framing += uart_hal_is_rx_stop_bits_err_int_triggered(&s_uart[id].hal, id, int_status);
+	}
 	UART_STATIS_GET(uart_statis, id);
 	UART_STATIS_INC(uart_statis->uart_isr_cnt);
 
@@ -1991,6 +2064,11 @@ static void uart_isr_common(uart_id_t id)
 			if (s_uart_rx_isr[id].callback)
 			{
 					s_uart_rx_isr[id].callback(id, s_uart_rx_isr[id].param);
+			}
+			if (ready->handler.callback &&
+			    (uart_hal_is_rx_recv_fini_int_triggered(&s_uart[id].hal, id, status) ||
+			     kfifo_data_size(s_uart_rx_kfifo[id]) >= ready->min_bytes)) {
+				ready->handler.callback(id, ready->handler.param);
 			}
 		}
 		else if (s_uart_rx_isr[id].callback)

@@ -713,11 +713,22 @@ dhcp_handle_ack(struct netif *netif, struct dhcp_msg *msg_in)
 
 #if LWIP_DHCP_PROVIDE_DNS_SERVERS
   /* DNS servers */
+#ifdef LWIP_HOOK_DHCP_SET_DNS_SERVERS
+  ip_addr_t servers[LWIP_DHCP_PROVIDE_DNS_SERVERS];
+  extern void LWIP_HOOK_DHCP_SET_DNS_SERVERS(struct netif *, const ip_addr_t *, u8_t);
+#endif
   for (n = 0; (n < LWIP_DHCP_PROVIDE_DNS_SERVERS) && dhcp_option_given(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n); n++) {
     ip_addr_t dns_addr;
     ip_addr_set_ip4_u32_val(dns_addr, lwip_htonl(dhcp_get_option_value(dhcp, DHCP_OPTION_IDX_DNS_SERVER + n)));
+#ifdef LWIP_HOOK_DHCP_SET_DNS_SERVERS
+    servers[n] = dns_addr;
+#else
     dns_setserver(n, &dns_addr);
+#endif
   }
+#ifdef LWIP_HOOK_DHCP_SET_DNS_SERVERS
+  LWIP_HOOK_DHCP_SET_DNS_SERVERS(netif, servers, n);
+#endif
 #endif /* LWIP_DHCP_PROVIDE_DNS_SERVERS */
 }
 
