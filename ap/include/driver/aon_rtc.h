@@ -57,6 +57,15 @@ bk_err_t bk_rtc_gettimeofday(struct timeval *tv, void *ptz);
  */
 bk_err_t bk_rtc_settimeofday(const struct timeval *tv,const struct timezone *tz);
 
+#if CONFIG_AON_RTC_64BIT && CONFIG_AON_RTC_KEEP_TIME_SUPPORT
+/* Install a board time store after storage initialization. The save callback
+ * runs in the task setting wall time and can read the current offset below.
+ * A NULL callback uses EasyFlash. Returns true if the saved offset was restored
+ * before the clock received its first live update. */
+bool bk_aon_rtc_set_time_store(bk_err_t (*save)(void), const int64_t *restored_offset_us);
+int64_t bk_aon_rtc_get_time_offset(void);
+#endif
+
 /**
  * @brief   Get aon rtc ticks of per ms
  *

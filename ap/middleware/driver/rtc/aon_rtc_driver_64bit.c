@@ -43,6 +43,10 @@ static SPINLOCK_SECTION volatile spinlock_t rtc_spin_lock = SPIN_LOCK_INIT;
 #endif // CONFIG_FREERTOS_SMP
 #define AONRTC_GET_SET_TIME_RTC_ID AON_RTC_ID_1
 static int64_t s_boot_time_us = 0;	//timeofday value
+#if CONFIG_AON_RTC_KEEP_TIME_SUPPORT
+static bk_err_t (*s_save_boot_time)(void);
+static bool s_wall_time_set;
+#endif
 
 #ifdef CONFIG_EXTERN_32K
 static uint32_t s_aon_rtc_clock_freq = AON_RTC_EXTERN_32K_CLOCK_FREQ;
@@ -70,6 +74,14 @@ static inline void rtc_exit_critical(uint32_t flags)
 #endif // CONFIG_FREERTOS_SMP
 
        rtos_enable_int(flags);
+}
+
+static int64_t rtc_time_offset(void)
+{
+	uint32_t flags = rtc_enter_critical();
+	int64_t offset = s_boot_time_us;
+	rtc_exit_critical(flags);
+	return offset;
 }
 
 __IRAM_SEC float bk_rtc_get_ms_tick_count(void) {
@@ -150,6 +162,23 @@ static uint64_t rtc_tick_to_s(uint64_t rtc_tick)
 
 #if CONFIG_AON_RTC_KEEP_TIME_SUPPORT
 #define AONRTC_DEEPSLEEP_KEEPTIME_EF_KEYNUM 2
+
+bool bk_aon_rtc_set_time_store(bk_err_t (*save)(void), const int64_t *restored_offset_us)
+{
+	uint32_t flags = rtc_enter_critical();
+	s_save_boot_time = save;
+	bool restored = restored_offset_us && !s_wall_time_set;
+	if (restored)
+		s_boot_time_us = *restored_offset_us;
+	rtc_exit_critical(flags);
+	return restored;
+}
+
+int64_t bk_aon_rtc_get_time_offset(void)
+{
+	return rtc_time_offset();
+}
+
 /*
  * WARNING:
  * This function is only called by AON RTC driver when set timeofday!!!
@@ -157,12 +186,12 @@ static uint64_t rtc_tick_to_s(uint64_t rtc_tick)
  * save the time value to flash.
  * after system wakeup,restore the baked time.
  */
-static bk_err_t aon_rtc_bake_timeofday()
+static bk_err_t aon_rtc_bake_timeofday(int64_t offset)
 {
 #if CONFIG_EASY_FLASH
 	struct timeval rtc_keep_time = {0, 0};
-	rtc_keep_time.tv_sec = s_boot_time_us/1000000;
-	rtc_keep_time.tv_usec = s_boot_time_us%1000000;
+	rtc_keep_time.tv_sec = offset/1000000;
+	rtc_keep_time.tv_usec = offset%1000000;
 	//bake up current time to flash
 	char *rtc_keep_time_key[2] = {"rtc_tv_sec", "rtc_tv_usec"};
 	uint32_t ret = 0;
@@ -177,6 +206,7 @@ static bk_err_t aon_rtc_bake_timeofday()
 		AON_RTC_LOGV("%s, sec=%d, usec=%d, ret=%d.\n",__func__, (uint32_t)rtc_keep_time.tv_sec, (uint32_t)rtc_keep_time.tv_usec, ret);
 	}
 #else
+	(void)offset;
 	AON_RTC_LOGD("TODO:Please save the time to none lost memory\r\n", __func__);
 #endif
 	return BK_OK;
@@ -206,7 +236,10 @@ void aon_rtc_update_boot_time()
 {
 	struct timeval time = {0, 0};
 	aon_rtc_get_timeofday(&time);
-	s_boot_time_us = ((uint64_t)time.tv_sec)*1000000LL+time.tv_usec;
+	uint32_t flags = rtc_enter_critical();
+	if (!s_wall_time_set)
+		s_boot_time_us = (int64_t)time.tv_sec * 1000000LL + time.tv_usec;
+	rtc_exit_critical(flags);
 }
 #endif
 
@@ -242,11 +275,12 @@ bk_err_t bk_rtc_gettimeofday(struct timeval *tv, void *ptz)
 
     if(tv!=NULL)
     {
-        uint64_t uCurTimeUs = s_boot_time_us + bk_aon_rtc_get_us();
+        int64_t offset = rtc_time_offset();
+        uint64_t uCurTimeUs = offset + bk_aon_rtc_get_us();
 
         tv->tv_sec=uCurTimeUs/1000000;
         tv->tv_usec=uCurTimeUs%1000000;
-        AON_RTC_LOGV("s_boot_time_us:h=0x%x,l=0x%x \r\n", s_boot_time_us>>32, (uint32_t)s_boot_time_us);
+        AON_RTC_LOGV("s_boot_time_us:h=0x%x,l=0x%x \r\n", (uint32_t)(offset>>32), (uint32_t)offset);
         AON_RTC_LOGV("%s sec=%d,us:%d\n", __func__, tv->tv_sec, tv->tv_usec);
     } else
         AON_RTC_LOGW("%s tv is null \r\n",__func__);
@@ -259,15 +293,21 @@ bk_err_t bk_rtc_settimeofday(const struct timeval *tv,const struct timezone *tz)
     (void)tz;
     if(tv)
     {
-        uint64_t setTimeUs = ((uint64_t)tv->tv_sec)*1000000LL + tv->tv_usec ;
+        int64_t setTimeUs = (int64_t)tv->tv_sec * 1000000LL + tv->tv_usec;
         uint64_t getCurTimeUs = bk_aon_rtc_get_us();
-
-        s_boot_time_us = setTimeUs - getCurTimeUs;
+        int64_t offset = setTimeUs - (int64_t)getCurTimeUs;
+        uint32_t flags = rtc_enter_critical();
+        s_boot_time_us = offset;
+#if CONFIG_AON_RTC_KEEP_TIME_SUPPORT
+        s_wall_time_set = true;
+        bk_err_t (*save)(void) = s_save_boot_time;
+#endif
+        rtc_exit_critical(flags);
         AON_RTC_LOGV("%s:sec=%d us=%d\n", __func__, tv->tv_sec, tv->tv_usec);
         AON_RTC_LOGV("get us:h=0x%x,l=0x%x\n", getCurTimeUs>>32, (uint32_t)getCurTimeUs);
 
 #if CONFIG_AON_RTC_KEEP_TIME_SUPPORT
-        aon_rtc_bake_timeofday();
+        return save ? save() : aon_rtc_bake_timeofday(offset);
 #endif
     }
 
