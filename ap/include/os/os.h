@@ -1207,6 +1207,18 @@ size_t rtos_get_psram_free_heap_size(void);
   */
 size_t rtos_get_psram_minimum_free_heap_size(void);
 
+#if CONFIG_FREERTOS_SMP
+typedef struct {
+    size_t capacity;
+    size_t free_bytes;
+    size_t minimum_free_bytes;
+    size_t largest_free_block;
+} rtos_psram_heap_stats_t;
+
+/** Snapshot of ordinary PSRAM heap space. Block sizes include their headers. */
+void rtos_get_psram_heap_stats(rtos_psram_heap_stats_t *stats);
+#endif
+
 /** @brief    get the os tick count
   * 
   * @return   The count of ticks since vTaskStartScheduler was called.

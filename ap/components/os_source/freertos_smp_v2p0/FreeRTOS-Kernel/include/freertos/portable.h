@@ -192,6 +192,7 @@ size_t xPortGetMinimumEverFreeHeapSize( void ) PRIVILEGED_FUNCTION;
 size_t xPortGetPsramTotalHeapSize( void ) PRIVILEGED_FUNCTION;
 size_t xPortGetPsramFreeHeapSize( void )PRIVILEGED_FUNCTION;
 size_t xPortGetPsramMinimumFreeHeapSize( void ) PRIVILEGED_FUNCTION;
+void vPortGetPsramHeapStats( HeapStats_t *stats ) PRIVILEGED_FUNCTION;
 uint32_t prvHeapGetTotalSize(void) PRIVILEGED_FUNCTION;
 #endif
 

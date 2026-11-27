@@ -1636,6 +1636,18 @@ size_t rtos_get_psram_minimum_free_heap_size(void)
     return xPortGetPsramMinimumFreeHeapSize();
 }
 
+void rtos_get_psram_heap_stats(rtos_psram_heap_stats_t *stats)
+{
+    HeapStats_t heap;
+    vPortGetPsramHeapStats(&heap);
+    *stats = (rtos_psram_heap_stats_t){
+        .capacity = xPortGetPsramTotalHeapSize(),
+        .free_bytes = heap.xAvailableHeapSpaceInBytes,
+        .minimum_free_bytes = heap.xMinimumEverFreeBytesRemaining,
+        .largest_free_block = heap.xSizeOfLargestFreeBlockInBytes,
+    };
+}
+
 #if CONFIG_CRITICAL_LR_RECORD
 #define CONFIG_CRITICAL_LR_COUNT 16
 static uint32_t s_critical_lr_stack[CONFIG_CPU_CNT][CONFIG_CRITICAL_LR_COUNT] = {0};

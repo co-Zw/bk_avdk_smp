@@ -44,6 +44,19 @@ void bk_psram_frame_buffer_init(void);
 
 void *bk_psram_frame_buffer_malloc(psram_heap_type_t type, uint32_t size);
 
+typedef struct {
+	uint32_t capacity;
+	uint32_t free_bytes;
+	uint32_t minimum_free_bytes;
+	uint32_t largest_free_block;
+} bk_psram_frame_buffer_stats_t;
+
+/* Sizes in the snapshot include the allocator's block headers. */
+bool bk_psram_frame_buffer_get_stats(psram_heap_type_t type, bk_psram_frame_buffer_stats_t *stats);
+
+/* Allocate only if a free block of at least reserve bytes will remain. */
+void *bk_psram_frame_buffer_malloc_reserve(psram_heap_type_t type, uint32_t size, uint32_t reserve);
+
 void bk_psram_frame_buffer_free(void* mem_ptr);
 
 // Print detailed memory blocks information (for debugging)

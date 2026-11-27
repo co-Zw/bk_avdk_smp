@@ -34,6 +34,8 @@
         } while(0)
 
 fb_mem_heap_t frame_mem_heap = {0};
+static uint32_t free_bytes[PSRAM_HEAP_MAX];
+static uint32_t minimum_free_bytes[PSRAM_HEAP_MAX];
 
 static void frame_buffer_heap_init(uint8_t type, uint8_t* heap, uint32_t heap_size)
 {
@@ -47,6 +49,8 @@ static void frame_buffer_heap_init(uint8_t type, uint8_t* heap, uint32_t heap_si
 	frame_mem_heap.heap[type]->next = NULL;
 	frame_mem_heap.heap[type]->previous = NULL;
 	frame_mem_heap.heap_size[type] = heap_size;
+	free_bytes[type] = frame_mem_heap.heap[type]->free_size;
+	minimum_free_bytes[type] = free_bytes[type];
 	// LOGD("%s heap:%p, type %d size %d\n", __func__, heap, type, heap_size);
 	// LOGD("%s, free_size:%d, check:0x%x\r\n", __func__, frame_mem_heap.heap[type]->free_size, frame_mem_heap.heap[type]->corrupt_check);
 }
@@ -79,6 +83,8 @@ void bk_psram_frame_buffer_init(void)
 
 	os_memset(frame_mem_heap.heap, 0, sizeof(struct fb_block_free*) * PSRAM_HEAP_MAX);
 	os_memset(frame_mem_heap.heap_size, 0, sizeof(uint32_t) * PSRAM_HEAP_MAX);
+	os_memset(free_bytes, 0, sizeof(free_bytes));
+	os_memset(minimum_free_bytes, 0, sizeof(minimum_free_bytes));
 
 	if (PSRAM_MEM_SLAB_USER_SIZE)
 	{
@@ -101,11 +107,35 @@ void bk_psram_frame_buffer_init(void)
 	}
 }
 
-void *bk_psram_frame_buffer_malloc(psram_heap_type_t type, uint32_t size)
+bool bk_psram_frame_buffer_get_stats(psram_heap_type_t type, bk_psram_frame_buffer_stats_t *stats)
+{
+	if (!stats || (unsigned)type >= PSRAM_HEAP_MAX)
+		return false;
+
+	GLOBAL_INT_DECLARATION();
+	GLOBAL_INT_DISABLE();
+	*stats = (bk_psram_frame_buffer_stats_t) {
+		.capacity = frame_mem_heap.heap_size[type],
+		.free_bytes = free_bytes[type],
+		.minimum_free_bytes = minimum_free_bytes[type],
+	};
+	for (const struct fb_block_free *block = frame_mem_heap.heap[type]; block; block = block->next) {
+		if (block->free_size > stats->largest_free_block)
+			stats->largest_free_block = block->free_size;
+	}
+	GLOBAL_INT_RESTORE();
+	return stats->capacity != 0;
+}
+
+static void *frame_buffer_malloc(psram_heap_type_t type, uint32_t size, uint32_t reserve)
 {
 	struct fb_block_free *node = NULL,*found = NULL;
 	fb_block_used *alloc = NULL;
 	uint32_t totalsize;
+	unsigned reserve_blocks = 0;
+
+	if ((unsigned)type >= PSRAM_HEAP_MAX || size > UINT32_MAX - sizeof(fb_block_used) - 3u)
+		return NULL;
 
 	if (frame_mem_heap.heap_size[type] == 0)
 	{
@@ -142,6 +172,8 @@ void *bk_psram_frame_buffer_malloc(psram_heap_type_t type, uint32_t size)
 	while (node != NULL)
 	{
 		FRAME_BUFFER_ASSERT(type, node->corrupt_check == FB_LIST_PATTERN);
+		if (reserve && node->free_size >= reserve)
+			++reserve_blocks;
 
 		// check if there is enough room in this free block
 		if (node->free_size >= (totalsize))
@@ -170,9 +202,11 @@ void *bk_psram_frame_buffer_malloc(psram_heap_type_t type, uint32_t size)
 		}
 	}
 
-	//BT_ASSERT_INFO(found != NULL, size, type);
-	// Re-boot platform if no more empty space
-	if(found == NULL)
+	/* Best fit leaves a smaller hole available only when it cannot satisfy
+	 * this request. Keep a reserve-sized block for the next large user. */
+	if (found == NULL ||
+	    (reserve && reserve_blocks <= 1 &&
+	     (!reserve_blocks || (found->free_size >= reserve && found->free_size - totalsize < reserve))))
 	{
 		//platform_reset(RESET_MEM_ALLOC_FAIL);
 		GLOBAL_INT_RESTORE();
@@ -211,6 +245,9 @@ void *bk_psram_frame_buffer_malloc(psram_heap_type_t type, uint32_t size)
 		// save the size of the allocated block
 		alloc->size = totalsize;
 		alloc->corrupt_check = FB_ALLOCATED_PATTERN;
+		free_bytes[heap_id] -= totalsize;
+		if (free_bytes[heap_id] < minimum_free_bytes[heap_id])
+			minimum_free_bytes[heap_id] = free_bytes[heap_id];
 		// move to the user memory space
 		alloc++;
 	}
@@ -219,6 +256,16 @@ void *bk_psram_frame_buffer_malloc(psram_heap_type_t type, uint32_t size)
 	GLOBAL_INT_RESTORE();
 	//BK_ASSERT(node == NULL);
 	return (void*)alloc;
+}
+
+void *bk_psram_frame_buffer_malloc(psram_heap_type_t type, uint32_t size)
+{
+	return frame_buffer_malloc(type, size, 0);
+}
+
+void *bk_psram_frame_buffer_malloc_reserve(psram_heap_type_t type, uint32_t size, uint32_t reserve)
+{
+	return frame_buffer_malloc(type, size, reserve);
 }
 
 void bk_psram_frame_buffer_free(void* mem_ptr)
@@ -351,6 +398,7 @@ void bk_psram_frame_buffer_free(void* mem_ptr)
 	freed->corrupt_check = FB_LIST_PATTERN;
 
 free_end:
+	free_bytes[cursor] += size;
 	// end of protection
 	GLOBAL_INT_RESTORE();
 }

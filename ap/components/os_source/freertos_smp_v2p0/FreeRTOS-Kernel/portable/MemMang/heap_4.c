@@ -2861,6 +2861,28 @@ size_t xPortGetPsramMinimumFreeHeapSize( void )
     return 0x0;
 #endif
 }
+
+void vPortGetPsramHeapStats( HeapStats_t *stats )
+{
+    *stats = (HeapStats_t){0};
+#if (CONFIG_PSRAM_AS_SYS_MEMORY)
+    HeapEnterCritical();
+    stats->xAvailableHeapSpaceInBytes = psram_xFreeBytesRemaining;
+    stats->xMinimumEverFreeBytesRemaining = psram_xMinimumEverFreeBytesRemaining;
+    /* The free-list nodes live in PSRAM. A live allocation keeps it powered. */
+    if (s_psram_used_count && !s_psram_power_inflight && bk_psram_heap_init_flag_get() &&
+        FIXED_ADDR_PSRAM_POWER_DOWN != PM_PSRAM_POWER_DOWN_MAGIC && psram_pxEnd) {
+        for (const BlockLink_t *block = psram_xStart.pxNextFreeBlock;
+             block != psram_pxEnd; block = block->pxNextFreeBlock) {
+            if (block->xBlockSize > stats->xSizeOfLargestFreeBlockInBytes)
+                stats->xSizeOfLargestFreeBlockInBytes = block->xBlockSize;
+        }
+    } else if (!s_psram_used_count) {
+        stats->xSizeOfLargestFreeBlockInBytes = psram_xFreeBytesRemaining;
+    }
+    HeapExitCritical();
+#endif
+}
 /*-----------------------------------------------------------*/
 
 void vPortInitialiseBlocks( void )
