@@ -20,7 +20,12 @@ void* ff_memalloc (	/* Returns pointer to the allocated memory block (null on no
 	UINT msize		/* Number of bytes to allocate */
 )
 {
+#if CONFIG_LINKOU_PXA && CONFIG_PSRAM_AS_SYS_MEMORY
+	/* Long-name lookup tables are CPU scratch space. Keep SRAM for RTOS objects. */
+	return psram_zalloc(msize);
+#else
 	return os_zalloc(msize);	/* Allocate a new memory block with POSIX API */
+#endif
 }
 
 
